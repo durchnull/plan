@@ -1,0 +1,16 @@
+{
+  "name": "durchnull",
+  "owner": {
+    "name": "David Friedrich"
+  },
+  "metadata": {
+    "description": "David Friedrich's Claude Code plugins."
+  },
+  "plugins": [
+    {
+      "name": "plan",
+      "source": ".",
+      "description": "Plan-doc lifecycle commands (/plan:init, :new, :rate, :sync, :next, :revise, :status, :handoff) over a frontmatter'd plan corpus in .plan/ (or any directory you configure), backed by a deterministic ranking engine."
+    }
+  ]
+}

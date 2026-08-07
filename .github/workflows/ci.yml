@@ -1,0 +1,145 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# The token every job below is handed. Without this block the run inherits the
+# repository default — a settings-page value that changes without a commit, and
+# these workflows run on pull_request, so a fork's code is what meets it. Read is
+# all any step here needs; declaring it in the file makes the file the guarantee,
+# and it travels with every clone and fork.
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      # `claude plugin validate <dir>` checks only ONE manifest — marketplace.json wins when
+      # both are present — so plugin.json would never be schema-checked here. This asserts the
+      # fields that matter plus the agreement `claude plugin tag` relies on, with no deps.
+      # The self-entry source is compared as a path, not a string: "." and "./" both name the
+      # marketplace root and both load, so a cosmetic trailing slash must not fail the build.
+      - name: Manifests are valid and agree
+        run: |
+          node -e '
+          const fs = require("fs");
+          const read = (p) => JSON.parse(fs.readFileSync(p, "utf8"));
+          const plugin = read(".claude-plugin/plugin.json");
+          const market = read(".claude-plugin/marketplace.json");
+          let bad = false;
+          const fail = (m) => { console.error(`✗ ${m}`); bad = true; };
+          for (const k of ["name", "version", "description"]) {
+            if (!plugin[k]) fail(`plugin.json is missing "${k}"`);
+          }
+          if (!/^\d+\.\d+\.\d+/.test(plugin.version ?? "")) {
+            fail(`plugin.json version "${plugin.version}" is not SemVer`);
+          }
+          const sources = (market.plugins ?? []).map((p) => p.source);
+          const isSelf = (s) => typeof s === "string" && s.trim().replace(/\/+$/, "") === ".";
+          const entry = (market.plugins ?? []).find((p) => isSelf(p.source));
+          if (!entry) fail(`marketplace.json has no self-entry pointing at the repo root; sources found: ${JSON.stringify(sources)}`);
+          else {
+            if (entry.name !== plugin.name) fail(`name mismatch: plugin.json "${plugin.name}" vs marketplace entry "${entry.name}"`);
+            if ("version" in entry) fail("marketplace entry pins a version — a second source of truth that will drift");
+          }
+          const top = fs.readFileSync("CHANGELOG.md", "utf8").match(/^## \[([^\]]+)\]/m);
+          if (!top) fail("CHANGELOG.md has no version heading");
+          else if (top[1] !== plugin.version) {
+            fail(`CHANGELOG.md top entry is [${top[1]}] but plugin.json is ${plugin.version}`);
+          }
+          if (bad) process.exit(1);
+          console.log(`✓ manifests valid and in agreement (${plugin.name} ${plugin.version})`);
+          '
+
+      # Every command advertised by the README must actually ship, and vice versa. A README
+      # documenting a command that does not exist is the failure the professionality bar names.
+      - name: README matches the shipped command set
+        run: |
+          node -e '
+          const fs = require("fs");
+          const readme = fs.readFileSync("README.md", "utf8");
+          const documented = new Set([...readme.matchAll(/\/plan:([a-z-]+)/g)].map((m) => m[1]));
+          const shipped = new Set(
+            fs.readdirSync("skills", { withFileTypes: true })
+              .filter((d) => d.isDirectory() && fs.existsSync(`skills/${d.name}/SKILL.md`))
+              .map((d) => d.name)
+          );
+          let bad = false;
+          for (const c of documented) if (!shipped.has(c)) { console.error(`✗ README documents /plan:${c}, which does not ship`); bad = true; }
+          for (const c of shipped) if (!documented.has(c)) { console.error(`✗ /plan:${c} ships but is undocumented`); bad = true; }
+          if (bad) process.exit(1);
+          console.log(`✓ README and skills/ agree (${[...shipped].sort().join(", ")})`);
+          '
+
+      # A bundled path must resolve via ${CLAUDE_PLUGIN_ROOT}. A bare-relative `scripts/x.mjs`
+      # looks fine and silently resolves against the CONSUMING project once installed.
+      - name: Bundled paths are plugin-root-relative
+        run: |
+          if grep -rnE '(^|[^/A-Z_}])scripts/[a-z-]+\.mjs' skills/ | grep -v 'CLAUDE_PLUGIN_ROOT'; then
+            echo "✗ bare-relative script path above — use \${CLAUDE_PLUGIN_ROOT}/scripts/…"
+            exit 1
+          fi
+          if grep -rnE '/Users/|~/' skills/ scripts/ .claude-plugin/; then
+            echo "✗ absolute or home path above — breaks on another machine"
+            exit 1
+          fi
+          echo "✓ no bare-relative or absolute bundled paths"
+
+      - name: Scripts parse
+        run: |
+          node --check scripts/plan-registry.mjs
+          node --check scripts/check-plan-docs.mjs
+          node --check scripts/resolve-plan-config.mjs
+
+      - name: check-plan-docs self-test
+        run: node scripts/check-plan-docs.mjs --self-test
+
+      - name: resolve-plan-config self-test
+        run: node scripts/resolve-plan-config.mjs --self-test
+
+      # The resolver must produce a usable config with no .claude/plan.json present —
+      # a fresh install has to work on inference alone.
+      - name: resolve-plan-config works with no config file
+        run: |
+          test ! -f .claude/plan.json
+          node scripts/resolve-plan-config.mjs --json | node -e '
+          let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => {
+            const r = JSON.parse(s);
+            if (!r.integrationBranch) { console.error("✗ no integrationBranch inferred"); process.exit(1); }
+            if (!Array.isArray(r.protectedBranches) || !r.protectedBranches.length) {
+              console.error("✗ no protectedBranches inferred"); process.exit(1);
+            }
+            console.log(`✓ inference-only resolve OK (integration: ${r.integrationBranch})`);
+          });'
+
+      # check-plan-docs.mjs is meant to be vendored into a project as a single
+      # dependency-free file, so it re-implements the plans-dir resolution instead of
+      # importing it. That duplication only stays safe if the two agree.
+      - name: Both scripts resolve the same plans directory
+        run: |
+          a=$(node scripts/resolve-plan-config.mjs --plans-dir)
+          b=$(node scripts/check-plan-docs.mjs --plans-dir)
+          test "$a" = "$b" || { echo "✗ resolver says '$a', check-plan-docs says '$b'"; exit 1; }
+          test "$a" = ".plan" || { echo "✗ a repo with no plans dir must default to .plan, got '$a'"; exit 1; }
+          mkdir -p .claude && printf '{ "plansDir": "docs/plan" }' > .claude/plan.json
+          a=$(node scripts/resolve-plan-config.mjs --plans-dir)
+          b=$(node scripts/check-plan-docs.mjs --plans-dir)
+          rm .claude/plan.json
+          test "$a" = "docs/plan" || { echo "✗ config did not move the plans dir, got '$a'"; exit 1; }
+          test "$a" = "$b" || { echo "✗ configured: resolver '$a' vs check-plan-docs '$b'"; exit 1; }
+          echo "✓ plans-dir resolution agrees (default and configured)"
+
+      - name: Validate the example corpus
+        run: PLANS_DIR=examples/plans node scripts/check-plan-docs.mjs
+
+      - name: plan-registry self-test against the example corpus
+        run: PLANS_DIR=examples/plans node scripts/plan-registry.mjs --self-test
