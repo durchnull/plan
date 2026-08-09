@@ -2,7 +2,7 @@
   "name": "plan",
   "displayName": "Plan (Beta)",
   "description": "Plan-doc lifecycle for a project's plans directory (.plan/ by default, configurable): pin project conventions (init), scaffold a plan (new), rank the corpus by importance (rate), reconcile declared status with the repo (sync), recommend what to build next (next), evolve a plan with its ripple (revise), a registry dashboard + lint (status), and hand a plan off to a fresh session (handoff).",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": {
     "name": "David Friedrich"
   },

@@ -6,6 +6,13 @@ All notable changes to the `plan` plugin are documented here. This project adher
 `plan` is pre-1.0: while the major version is `0`, the command surface and the plan frontmatter
 schema may change in a minor release. Pin a tag if you need stability.
 
+## [0.1.1] — 2026-08-09
+
+### Changed
+
+- The `/plugin` picker now labels this plugin "Plan (Beta)" while the major version stays `0`, so
+  the pre-1.0 status is visible before install, not just in the README and this changelog.
+
 ## [0.1.0] — 2026-08-05
 
 ### Added
